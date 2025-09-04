@@ -6,9 +6,9 @@ export default function Page() {
 
   return (
     <main style={{ maxWidth: 720, margin: "0 auto" }}>
-      <h1 style={{ fontSize: 28, marginBottom: 8 }}>✅ Webflow Cloud + GitHub (Synexian) </h1>
+      <h1 style={{ fontSize: 28, marginBottom: 8 }}>✅ Webflow Cloud + GitHub (Synexian)</h1>
       <p style={{ opacity: 0.85, marginBottom: 16 }}>
-        This page is served from <code>/webapp</code> using Next.js 14 on Webflow Cloud.
+        Served from <code>/webapp</code> using Next.js 15 on Webflow Cloud.
       </p>
 
       <div style={{ padding: 16, border: "1px solid #e5e7eb", borderRadius: 12 }}>
@@ -20,10 +20,6 @@ export default function Page() {
           Clicks: {count}
         </button>
       </div>
-
-      <p style={{ marginTop: 14, fontSize: 12, opacity: 0.75 }}>
-        If you can see this and the counter works, your CI/CD via Webflow Cloud is good to go. ✔️
-      </p>
     </main>
   );
 }
