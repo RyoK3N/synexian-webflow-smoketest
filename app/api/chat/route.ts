@@ -1,4 +1,5 @@
-// Use Node.js runtime (works with OpenNext Cloudflare via Node compat)
+// Use Node.js runtime (OpenNext Cloudflare compatible)
+// NOTE: API routes are NOT behind basePath; client must call "/api/chat" (absolute path)
 export const runtime = "nodejs";
 
 type Role = "system" | "user" | "assistant";
@@ -8,28 +9,28 @@ type Body = {
   provider: "openai" | "together" | "perplexity" | "groq" | "mistral" | "gemini";
   model?: string;
   messages: Msg[];
-  apiKey?: string;     // optional client-provided key
-  baseUrl?: string;    // optional custom base URL for OpenAI-compatible providers
+  apiKey?: string;   // optional client-provided key
+  baseUrl?: string;  // optional custom base URL for OpenAI-compatible providers
 };
 
-// Safe env lookup (Node compat on Workers usually exposes process.env)
+// Safe env lookup
 function env(name: string): string | undefined {
   try { return (process as any)?.env?.[name]; } catch { return undefined; }
 }
 
 const PROVIDERS = {
-  openai:      { base: "https://api.openai.com",      env: "OPENAI_API_KEY",      path: "/v1/chat/completions" },
-  together:    { base: "https://api.together.xyz",    env: "TOGETHER_API_KEY",    path: "/v1/chat/completions" },
-  perplexity:  { base: "https://api.perplexity.ai",   env: "PPLX_API_KEY",        path: "/v1/chat/completions" },
-  groq:        { base: "https://api.groq.com",        env: "GROQ_API_KEY",        path: "/openai/v1/chat/completions" },
-  mistral:     { base: "https://api.mistral.ai",      env: "MISTRAL_API_KEY",     path: "/v1/chat/completions" },
-  gemini:      { base: "https://generativelanguage.googleapis.com", env: "GEMINI_API_KEY", path: "" }
+  openai:     { base: "https://api.openai.com",      env: "OPENAI_API_KEY",      path: "/v1/chat/completions" },
+  together:   { base: "https://api.together.xyz",    env: "TOGETHER_API_KEY",    path: "/v1/chat/completions" },
+  perplexity: { base: "https://api.perplexity.ai",   env: "PPLX_API_KEY",        path: "/v1/chat/completions" },
+  groq:       { base: "https://api.groq.com",        env: "GROQ_API_KEY",        path: "/openai/v1/chat/completions" },
+  mistral:    { base: "https://api.mistral.ai",      env: "MISTRAL_API_KEY",     path: "/v1/chat/completions" },
+  gemini:     { base: "https://generativelanguage.googleapis.com", env: "GEMINI_API_KEY", path: "" }
 } as const;
 
 function error(status: number, message: string) {
   return new Response(JSON.stringify({ error: message }), {
     status,
-    headers: { "Content-Type": "application/json" }
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
   });
 }
 
@@ -50,6 +51,7 @@ export async function POST(req: Request) {
     if (!key) return error(401, "Missing Gemini API key (provide apiKey or set GEMINI_API_KEY)");
     const useModel = model || "gemini-1.5-flash";
 
+    // Gemini format
     const contents = messages.map(m => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content }]
@@ -58,11 +60,8 @@ export async function POST(req: Request) {
     const url = `${PROVIDERS.gemini.base}/v1beta/models/${encodeURIComponent(useModel)}:generateContent`;
     const r = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": key
-      },
-      body: JSON.stringify({ contents })
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({ contents, generationConfig: { temperature: 0.7 } })
     });
 
     if (!r.ok) {
@@ -71,7 +70,7 @@ export async function POST(req: Request) {
     }
     const json = await r.json() as any;
     const reply = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "(no content)";
-    return Response.json({ reply, provider: "gemini", model: useModel });
+    return Response.json({ reply, provider: "gemini", model: useModel }, { headers: { "Cache-Control": "no-store" } });
   }
 
   // OpenAI-compatible providers
@@ -92,15 +91,8 @@ export async function POST(req: Request) {
   const url = `${(baseUrl || p.base)}${p.path}`;
   const r = await fetch(url, {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${key}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: useModel,
-      messages,
-      temperature: 0.7
-    })
+    headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: useModel, messages, temperature: 0.7 })
   });
 
   if (!r.ok) {
@@ -114,5 +106,5 @@ export async function POST(req: Request) {
     json?.choices?.[0]?.text ??
     "(no content)";
 
-  return Response.json({ reply, provider, model: useModel });
+  return Response.json({ reply, provider, model: useModel }, { headers: { "Cache-Control": "no-store" } });
 }
