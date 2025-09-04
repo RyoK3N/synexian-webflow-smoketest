@@ -1,4 +1,5 @@
-export const runtime = "edge";
+// Use Node.js runtime (works with OpenNext Cloudflare via Node compat)
+export const runtime = "nodejs";
 
 type Role = "system" | "user" | "assistant";
 type Msg = { role: Role; content: string };
@@ -11,23 +12,25 @@ type Body = {
   baseUrl?: string;    // optional custom base URL for OpenAI-compatible providers
 };
 
-// Fallback env lookup (OpenNext/Workers provides env at runtime; we’ll guard for safety)
+// Safe env lookup (Node compat on Workers usually exposes process.env)
 function env(name: string): string | undefined {
   try { return (process as any)?.env?.[name]; } catch { return undefined; }
 }
 
-// Default upstreams / env var names per provider
 const PROVIDERS = {
   openai:      { base: "https://api.openai.com",      env: "OPENAI_API_KEY",      path: "/v1/chat/completions" },
   together:    { base: "https://api.together.xyz",    env: "TOGETHER_API_KEY",    path: "/v1/chat/completions" },
   perplexity:  { base: "https://api.perplexity.ai",   env: "PPLX_API_KEY",        path: "/v1/chat/completions" },
   groq:        { base: "https://api.groq.com",        env: "GROQ_API_KEY",        path: "/openai/v1/chat/completions" },
   mistral:     { base: "https://api.mistral.ai",      env: "MISTRAL_API_KEY",     path: "/v1/chat/completions" },
-  gemini:      { base: "https://generativelanguage.googleapis.com", env: "GEMINI_API_KEY", path: "" } // special
+  gemini:      { base: "https://generativelanguage.googleapis.com", env: "GEMINI_API_KEY", path: "" }
 } as const;
 
 function error(status: number, message: string) {
-  return new Response(JSON.stringify({ error: message }), { status, headers: { "Content-Type": "application/json" }});
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { "Content-Type": "application/json" }
+  });
 }
 
 export async function POST(req: Request) {
@@ -43,9 +46,8 @@ export async function POST(req: Request) {
   if (!Array.isArray(messages) || messages.length === 0) return error(400, "Missing 'messages'");
 
   if (provider === "gemini") {
-    // Gemini needs special formatting
     const key = clientKey || env(PROVIDERS.gemini.env);
-    if (!key) return error(401, "Missing Gemini API key (provide apiKey in body or set GEMINI_API_KEY in env)");
+    if (!key) return error(401, "Missing Gemini API key (provide apiKey or set GEMINI_API_KEY)");
     const useModel = model || "gemini-1.5-flash";
 
     const contents = messages.map(m => ({
@@ -77,7 +79,7 @@ export async function POST(req: Request) {
   if (!p) return error(400, `Unsupported provider: ${provider}`);
 
   const key = clientKey || env(p.env);
-  if (!key) return error(401, `Missing API key for ${provider} (provide apiKey in body or set ${p.env} in env)`);
+  if (!key) return error(401, `Missing API key for ${provider} (provide apiKey or set ${p.env})`);
 
   const useModel = model || (
     provider === "openai" ? "gpt-4o-mini" :
