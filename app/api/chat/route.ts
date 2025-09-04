@@ -1,5 +1,5 @@
 // Use Node.js runtime (OpenNext Cloudflare compatible)
-// NOTE: API routes are NOT behind basePath; client must call "/api/chat" (absolute path)
+// NOTE: API routes are NOT behind basePath; client must call "/api/chat".
 export const runtime = "nodejs";
 
 type Role = "system" | "user" | "assistant";
@@ -9,11 +9,11 @@ type Body = {
   provider: "openai" | "together" | "perplexity" | "groq" | "mistral" | "gemini";
   model?: string;
   messages: Msg[];
-  apiKey?: string;   // optional client-provided key
-  baseUrl?: string;  // optional custom base URL for OpenAI-compatible providers
+  apiKey?: string;    // optional client-provided key
+  baseUrl?: string;   // optional custom base URL for OpenAI-compatible providers
+  temperature?: number;
 };
 
-// Safe env lookup
 function env(name: string): string | undefined {
   try { return (process as any)?.env?.[name]; } catch { return undefined; }
 }
@@ -42,7 +42,7 @@ export async function POST(req: Request) {
     return error(400, "Invalid JSON body");
   }
 
-  const { provider, model, messages, apiKey: clientKey, baseUrl } = body || {};
+  const { provider, model, messages, apiKey: clientKey, baseUrl, temperature = 0.7 } = body || {};
   if (!provider) return error(400, "Missing 'provider'");
   if (!Array.isArray(messages) || messages.length === 0) return error(400, "Missing 'messages'");
 
@@ -61,7 +61,10 @@ export async function POST(req: Request) {
     const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({ contents, generationConfig: { temperature: 0.7 } })
+      body: JSON.stringify({
+        contents,
+        generationConfig: { temperature: Math.max(0, Math.min(1, temperature)) }
+      })
     });
 
     if (!r.ok) {
@@ -92,7 +95,11 @@ export async function POST(req: Request) {
   const r = await fetch(url, {
     method: "POST",
     headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: useModel, messages, temperature: 0.7 })
+    body: JSON.stringify({
+      model: useModel,
+      messages,
+      temperature: Math.max(0, Math.min(1, temperature))
+    })
   });
 
   if (!r.ok) {
