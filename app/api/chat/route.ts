@@ -1,5 +1,4 @@
 // Use Node.js runtime (OpenNext Cloudflare compatible)
-// NOTE: API routes are NOT behind basePath; client must call "/api/chat".
 export const runtime = "nodejs";
 
 type Role = "system" | "user" | "assistant";
@@ -9,8 +8,8 @@ type Body = {
   provider: "openai" | "together" | "perplexity" | "groq" | "mistral" | "gemini";
   model?: string;
   messages: Msg[];
-  apiKey?: string;    // optional client-provided key
-  baseUrl?: string;   // optional custom base URL for OpenAI-compatible providers
+  apiKey?: string;    // BYOK from client
+  baseUrl?: string;   // custom base URL for OpenAI-compatible providers
   temperature?: number;
 };
 
@@ -46,9 +45,12 @@ export async function POST(req: Request) {
   if (!provider) return error(400, "Missing 'provider'");
   if (!Array.isArray(messages) || messages.length === 0) return error(400, "Missing 'messages'");
 
+  // BYOK first — if no client key provided, try environment (you said you won't set env keys)
+  const resolveKey = (envName: string) => clientKey || env(envName);
+
   if (provider === "gemini") {
-    const key = clientKey || env(PROVIDERS.gemini.env);
-    if (!key) return error(401, "Missing Gemini API key (provide apiKey or set GEMINI_API_KEY)");
+    const key = resolveKey(PROVIDERS.gemini.env);
+    if (!key) return error(401, "Missing Gemini API key. Provide apiKey in the request body.");
     const useModel = model || "gemini-1.5-flash";
 
     // Gemini format
@@ -80,8 +82,8 @@ export async function POST(req: Request) {
   const p = (PROVIDERS as any)[provider];
   if (!p) return error(400, `Unsupported provider: ${provider}`);
 
-  const key = clientKey || env(p.env);
-  if (!key) return error(401, `Missing API key for ${provider} (provide apiKey or set ${p.env})`);
+  const key = resolveKey(p.env);
+  if (!key) return error(401, `Missing API key for ${provider}. Provide apiKey in the request body.`);
 
   const useModel = model || (
     provider === "openai" ? "gpt-4o-mini" :
