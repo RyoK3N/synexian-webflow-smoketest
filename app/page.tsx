@@ -1,22 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, KeyboardEvent } from "react";
+import { useEffect, useRef, useState, KeyboardEvent } from "react";
 
-/** --------------------------
- *  Types & constants
- *  -------------------------- */
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Types & constants
+ * ────────────────────────────────────────────────────────────────────────────── */
 type Role = "system" | "user" | "assistant";
 type Msg = { role: Role; content: string; id: string; ts: number };
 
 type Provider = "openai" | "together" | "perplexity" | "groq" | "mistral" | "gemini";
 
-const DEFAULTS: Record<Provider, { model: string; note?: string }> = {
-  openai:     { model: "gpt-4o-mini" },
-  together:   { model: "meta-llama/Llama-3.1-8B-Instruct-Turbo" },
-  perplexity: { model: "llama-3.1-70b-instruct" },
-  groq:       { model: "llama3-70b-8192" },
-  mistral:    { model: "mistral-large-latest" },
-  gemini:     { model: "gemini-1.5-flash" }
+const DEFAULTS: Record<Provider, { model: string; hint?: string }> = {
+  openai:     { model: "gpt-4o-mini", hint: "Fast + multimodal" },
+  together:   { model: "meta-llama/Llama-3.1-8B-Instruct-Turbo", hint: "Open-source 8B" },
+  perplexity: { model: "llama-3.1-70b-instruct", hint: "Strong RAG/search" },
+  groq:       { model: "llama3-70b-8192", hint: "Low-latency" },
+  mistral:    { model: "mistral-large-latest", hint: "Euro data center" },
+  gemini:     { model: "gemini-1.5-flash", hint: "Great on long/context" }
 };
 
 const PRODUCTS = [
@@ -27,31 +27,39 @@ const PRODUCTS = [
 
 const STORAGE_KEY = "synexian.playground.v1";
 
-/** Utility */
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Utilities
+ * ────────────────────────────────────────────────────────────────────────────── */
 const uid = () => Math.random().toString(36).slice(2);
 
-/** --------------------------
- *  Root page
- *  -------------------------- */
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Component
+ * ────────────────────────────────────────────────────────────────────────────── */
 export default function Page() {
-  /** Settings */
+  /* Settings */
   const [provider, setProvider] = useState<Provider>("openai");
   const [model, setModel] = useState<string>(DEFAULTS.openai.model);
   const [system, setSystem] = useState<string>("You are Synexian’s helpful assistant.");
 
-  /** Stateful UI */
+  /* Chat state */
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [temperature, setTemperature] = useState(0.7);
 
-  /** Bring-Your-Own-Key (client side, stored locally only) */
+  /* Bring-Your-Own-Key (local only) */
   const [useClientKey, setUseClientKey] = useState(false);
   const [clientKey, setClientKey] = useState("");
 
-  /** Layout refs */
+  /* UI helpers */
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  /** Persist/restore session */
+  /* Restore persisted session */
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -61,69 +69,83 @@ export default function Page() {
       if (saved.model) setModel(saved.model);
       if (saved.system) setSystem(saved.system);
       if (Array.isArray(saved.messages)) setMessages(saved.messages);
+      if (typeof saved.temperature === "number") setTemperature(clamp(saved.temperature, 0, 1));
       if (saved.useClientKey) setUseClientKey(!!saved.useClientKey);
     } catch {}
   }, []);
 
+  /* Persist session */
   useEffect(() => {
     try {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ provider, model, system, messages, useClientKey })
+        JSON.stringify({ provider, model, system, messages, temperature, useClientKey })
       );
     } catch {}
-  }, [provider, model, system, messages, useClientKey]);
+  }, [provider, model, system, messages, temperature, useClientKey]);
 
-  /** Sync default model with provider */
+  /* Sync default model on provider change */
   useEffect(() => {
     setModel(DEFAULTS[provider]?.model || "");
   }, [provider]);
 
-  /** Auto scroll */
+  /* Auto-scroll on new messages */
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
 
-  /** Actions */
   function resetChat() {
     setMessages([]);
+    setInput("");
+    inputRef.current?.focus();
   }
 
   function append(role: Role, content: string) {
-    setMessages((cur) => [...cur, { role, content, id: uid(), ts: Date.now() }]);
+    const entry: Msg = { role, content, id: uid(), ts: Date.now() };
+    setMessages((cur) => [...cur, entry]);
   }
 
   async function send() {
     const text = input.trim();
     if (!text || loading) return;
 
-    // Bootstrap system on first message for better determinism
-    const bootstrap: Msg[] = messages.length
-      ? messages
-      : [{ role: "system", content: system, id: uid(), ts: Date.now() }];
+    /* Bootstrap system on first user message */
+    const bootstrap: Msg[] =
+      messages.length > 0
+        ? messages
+        : [{ role: "system" as Role, content: system, id: uid(), ts: Date.now() }];
 
-    const next = [...bootstrap, { role: "user", content: text, id: uid(), ts: Date.now() }];
-    setMessages(next);
+    const userMsg: Msg = { role: "user", content: text, id: uid(), ts: Date.now() };
+    const next: Msg[] = [...bootstrap, userMsg];
+
+    setMessages(next);            // <-- typed Msg[], fixes TS error
     setInput("");
     setLoading(true);
 
     try {
-      // IMPORTANT: absolute path so API is not behind basePath
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000); // 30s safety
+
+      // IMPORTANT: absolute path (API is NOT behind basePath)
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           provider,
           model,
+          temperature,
           messages: next.map(({ role, content }) => ({ role, content })),
           apiKey: useClientKey ? clientKey : undefined
         })
       });
+      clearTimeout(timeout);
 
       if (!res.ok) {
         const errText = await res.text();
         throw new Error(errText || `Request failed (${res.status})`);
       }
+
       const data = await res.json();
       const reply: string = data?.reply ?? "(no reply)";
       append("assistant", reply);
@@ -141,26 +163,24 @@ export default function Page() {
     }
   }
 
-  /** --------------------------
-   *  UI
-   *  -------------------------- */
   return (
-    <div style={styles.shell}>
-      <aside style={styles.sidebar}>
-        <div style={styles.brand}>
-          <div style={styles.brandDot} />
+    <div style={sx.shell}>
+      {/* Sidebar */}
+      <aside style={sx.sidebar}>
+        <div style={sx.brand}>
+          <div style={sx.brandMark} />
           <div>
-            <div style={styles.brandTitle}>Synexian Playground</div>
-            <div style={styles.brandSub}>Webflow Cloud • Next.js 15</div>
+            <div style={sx.brandTitle}>Synexian Playground</div>
+            <div style={sx.brandSub}>Webflow Cloud • Next.js 15</div>
           </div>
         </div>
 
-        <div style={styles.section}>
-          <div style={styles.label}>Provider</div>
+        <div style={sx.block}>
+          <div style={sx.label}>Provider</div>
           <select
             value={provider}
             onChange={(e) => setProvider(e.target.value as Provider)}
-            style={styles.select}
+            style={sx.select}
           >
             <option value="openai">OpenAI</option>
             <option value="together">Together</option>
@@ -169,32 +189,44 @@ export default function Page() {
             <option value="mistral">Mistral</option>
             <option value="gemini">Gemini</option>
           </select>
+          <div style={sx.help}>{DEFAULTS[provider].hint}</div>
         </div>
 
-        <div style={styles.section}>
-          <div style={styles.label}>Model</div>
+        <div style={sx.block}>
+          <div style={sx.label}>Model</div>
           <input
             value={model}
             onChange={(e) => setModel(e.target.value)}
             placeholder={DEFAULTS[provider].model}
-            style={styles.input}
+            style={sx.input}
           />
-          <div style={styles.help}>
-            Default: <code>{DEFAULTS[provider].model}</code>
-          </div>
+          <div style={sx.help}>Default: <code>{DEFAULTS[provider].model}</code></div>
         </div>
 
-        <div style={styles.section}>
-          <div style={styles.label}>System Prompt</div>
+        <div style={sx.block}>
+          <div style={sx.label}>Temperature: {temperature.toFixed(2)}</div>
+          <input
+            type="range"
+            step="0.01"
+            min="0"
+            max="1"
+            value={temperature}
+            onChange={(e) => setTemperature(parseFloat(e.target.value))}
+          />
+          <div style={sx.help}>Lower → precise • Higher → creative</div>
+        </div>
+
+        <div style={sx.block}>
+          <div style={sx.label}>System Prompt</div>
           <textarea
             rows={3}
             value={system}
             onChange={(e) => setSystem(e.target.value)}
-            style={styles.textarea}
+            style={sx.textarea}
           />
         </div>
 
-        <div style={styles.section}>
+        <div style={sx.block}>
           <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input
               type="checkbox"
@@ -209,73 +241,75 @@ export default function Page() {
               value={clientKey}
               onChange={(e) => setClientKey(e.target.value)}
               placeholder="sk-... / your API key"
-              style={{ ...styles.input, marginTop: 8 }}
+              style={{ ...sx.input, marginTop: 8 }}
             />
           )}
-          <div style={styles.help}>
+          <div style={sx.help}>
             Otherwise the server uses provider keys set in Webflow Cloud → Environment Variables.
           </div>
         </div>
 
-        <div style={styles.section}>
-          <div style={styles.label}>Synexian Products</div>
+        <div style={sx.block}>
+          <div style={sx.label}>Synexian Products</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {PRODUCTS.map((p) => (
-              <span
+              <button
                 key={p.name}
                 title={p.hint}
-                style={styles.chip}
+                style={sx.chip}
                 onClick={() => setInput(`Tell me about ${p.name}: ${p.hint}`)}
               >
                 {p.name}
-              </span>
+              </button>
             ))}
           </div>
         </div>
 
-        <div style={{ marginTop: "auto" }}>
-          <button style={styles.ghostBtn} onClick={resetChat}>Clear chat</button>
+        <div style={{ marginTop: "auto", display: "grid", gap: 8 }}>
+          <button style={sx.ghostBtn} onClick={resetChat}>Clear chat</button>
+          <button style={sx.ghostBtn} onClick={() => inputRef.current?.focus()}>Focus input</button>
         </div>
       </aside>
 
-      <main style={styles.main}>
-        <header style={styles.header}>
-          <div style={styles.headerTitle}>Chat</div>
-          <div style={styles.headerSub}>
+      {/* Main */}
+      <main style={sx.main}>
+        <header style={sx.header}>
+          <div style={sx.headerTitle}>Chat</div>
+          <div style={sx.headerSub}>
             {provider} • <code style={{ opacity: 0.9 }}>{model}</code>
           </div>
         </header>
 
-        <section style={styles.transcript} ref={scrollRef}>
+        <section style={sx.transcript} ref={scrollRef}>
           {messages.length === 0 ? (
-            <div style={styles.placeholder}>
-              Start a conversation — Shift+Enter for newline, Enter to send.
+            <div style={sx.placeholder}>
+              Start a conversation — <kbd>Enter</kbd> to send • <kbd>Shift</kbd>+<kbd>Enter</kbd> for newline
             </div>
           ) : (
-            messages.map((m) => (
-              <MessageBubble key={m.id} role={m.role} content={m.content} />
-            ))
+            messages.map((m) => <Bubble key={m.id} msg={m} />)
           )}
-          {loading && <div style={styles.thinking}>…thinking</div>}
+          {loading && <div style={sx.thinking}>…thinking</div>}
         </section>
 
-        <section style={styles.composer}>
+        <section style={sx.composer}>
           <textarea
+            ref={inputRef}
             rows={2}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Ask about Synexian products, or anything else…"
-            style={styles.composerInput}
+            style={sx.composerInput}
           />
           <button
             onClick={send}
             disabled={loading || !input.trim()}
             style={{
-              ...styles.primaryBtn,
+              ...sx.primaryBtn,
               opacity: loading || !input.trim() ? 0.6 : 1,
               cursor: loading || !input.trim() ? "not-allowed" : "pointer"
             }}
+            aria-label="Send message"
           >
             Send
           </button>
@@ -285,40 +319,40 @@ export default function Page() {
   );
 }
 
-/** --------------------------
- *  Message bubble component
- *  -------------------------- */
-function MessageBubble({ role, content }: { role: Role; content: string }) {
-  const isUser = role === "user";
-  const isSystem = role === "system";
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Message bubble
+ * ────────────────────────────────────────────────────────────────────────────── */
+function Bubble({ msg }: { msg: Msg }) {
+  const isUser = msg.role === "user";
+  const isSystem = msg.role === "system";
   const label = isUser ? "You" : isSystem ? "System" : "Synexian";
 
   return (
-    <div style={{ marginBottom: 14, display: "flex", flexDirection: "column", gap: 6 }}>
+    <article style={{ marginBottom: 14, display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ fontSize: 12, opacity: 0.6 }}>{label}</div>
       <div
         style={{
           border: "1px solid #2c2c47",
           borderRadius: 12,
           padding: "12px 14px",
+          background: isUser ? "#141533" : "#0f1026",
           whiteSpace: "pre-wrap",
-          lineHeight: 1.5,
-          background: isUser ? "#121226" : "#0f1023"
+          lineHeight: 1.6
         }}
       >
-        {content}
+        {msg.content}
       </div>
-    </div>
+    </article>
   );
 }
 
-/** --------------------------
- *  Inline styles (playground aesthetic)
- *  -------------------------- */
-const styles: Record<string, React.CSSProperties> = {
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Styles (clean, playground-like)
+ * ────────────────────────────────────────────────────────────────────────────── */
+const sx: Record<string, React.CSSProperties> = {
   shell: {
     display: "grid",
-    gridTemplateColumns: "320px 1fr",
+    gridTemplateColumns: "340px 1fr",
     gap: 16,
     height: "calc(100vh - 48px)"
   },
@@ -331,15 +365,15 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 14,
     background: "linear-gradient(180deg,#0e0f22,#0a0b1b)"
   },
-  brand: { display: "flex", alignItems: "center", gap: 10, marginBottom: 6 },
-  brandDot: {
+  brand: { display: "flex", alignItems: "center", gap: 10, marginBottom: 4 },
+  brandMark: {
     width: 10, height: 10, borderRadius: 999,
     background: "linear-gradient(135deg,#3DCE83,#24c7f8)",
     boxShadow: "0 0 18px rgba(36,199,248,.45)"
   },
   brandTitle: { fontWeight: 700, letterSpacing: 0.3 },
   brandSub: { fontSize: 12, opacity: 0.6 },
-  section: { display: "grid", gap: 8 },
+  block: { display: "grid", gap: 8 },
   label: { fontSize: 12, opacity: 0.7 },
   select: {
     padding: 10, borderRadius: 10, background: "#121226", color: "#fff", border: "1px solid #2c2c47"
@@ -352,10 +386,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   help: { fontSize: 11, opacity: 0.6 },
   chip: {
-    padding: "6px 10px", borderRadius: 999, border: "1px solid #2c2c47", cursor: "pointer"
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid #2c2c47",
+    background: "transparent",
+    color: "#e7e7ff",
+    cursor: "pointer"
   },
   ghostBtn: {
-    width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #2c2c47", background: "transparent", color: "#e7e7ff"
+    width: "100%", padding: "10px 12px", borderRadius: 10,
+    border: "1px solid #2c2c47", background: "transparent", color: "#e7e7ff"
   },
   main: {
     display: "grid",
